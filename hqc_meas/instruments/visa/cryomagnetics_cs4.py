@@ -8,7 +8,7 @@ from ..visa_tools import VisaInstrument
 _GET_HEATER_DICT = {'0': 'Off',
                     '1': 'On'}
 
-_ACTIVITY_DICT = {'To zero': 'SWEEP ZERO'}
+_ACTIVITY_DICT = {'To zero': 'SWEEP ZERO FAST'}
 
 FIELD_CURRENT_RATIO = 0.043963
 OUT_FLUC = 2e-4
@@ -20,6 +20,10 @@ class CS4(VisaInstrument):
     def make_ready(self):
         """
         """
+        state = int('10000000', 2) & int(self.ask('*STB?'))
+        if state:
+            raise InstrIOError(cleandoc('''CS4 is set to local locked.
+                            Unlock it by pushing the "local" button'''))
         self.write('UNITS T')
         self.write('RANGE 0 100')
 
@@ -28,7 +32,7 @@ class CS4(VisaInstrument):
         """
         """
         # sweeping rate is converted from T/min to A/sec
-        self.field_sweep_rate = rate / (60 * FIELD_CURRENT_RATIO)
+        self.slow_sweep_rate = rate / (60 * FIELD_CURRENT_RATIO)
 
         if abs(self.persistent_field - value) >= OUT_FLUC:
 
@@ -43,7 +47,7 @@ class CS4(VisaInstrument):
             self.heater_state = 'Off'
             sleep(post_switch_wait)
             self.activity = 'To zero'
-            wait = abs(self.target_field) / self.field_sweep_rate
+            wait = abs(self.target_field) / self.fast_sweep_rate
             wait /= FIELD_CURRENT_RATIO
             sleep(wait)
             niter = 0
@@ -55,6 +59,9 @@ class CS4(VisaInstrument):
                         to zero after {} sec'''.format(MAXITER)))
 
     def check_connection(self):
+        state = int('111100', 2) & int(self.ask('*ESR?'))
+        if state:
+            self.make_ready()
         pass
 
     @instrument_property
@@ -76,17 +83,23 @@ class CS4(VisaInstrument):
             self.write('PSHTR {}'.format(state))
 
     @instrument_property
-    def field_sweep_rate(self):
+    def slow_sweep_rate(self):
         """
         """
         return float(self.ask('RATE? 0'))
 
-    @field_sweep_rate.setter
+    @slow_sweep_rate.setter
     @secure_communication()
-    def field_sweep_rate(self, rate):
+    def slow_sweep_rate(self, rate):
         """
         """
         self.write("RATE 0 {}".format(rate))
+
+    @instrument_property
+    def fast_sweep_rate(self):
+        """
+        """
+        return float(self.ask('RATE? 3'))
 
     @instrument_property
     def target_field(self):
@@ -101,10 +114,14 @@ class CS4(VisaInstrument):
         sweep the output intensity to reach the specified ULIM (in A)
         at a rate depending on the intensity, as defined in the range(s)
         """
-        wait = abs(self.target_field - target) / self.field_sweep_rate
-        wait /= FIELD_CURRENT_RATIO
         self.write("ULIM {}".format(target))
-        self.write('SWEEP UP')
+        if self.heater_state == 'On':
+            self.write('SWEEP UP SLOW')
+            wait = abs(self.target_field - target) / self.slow_sweep_rate
+        else:
+            self.write('SWEEP UP FAST')
+            wait = abs(self.target_field - target) / self.fast_sweep_rate
+        wait /= FIELD_CURRENT_RATIO
         sleep(wait)
         niter = 0
         while abs(self.target_field - target) >= OUT_FLUC:
